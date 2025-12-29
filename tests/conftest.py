@@ -1,7 +1,6 @@
 import pytest
 
-from src.column import Column, int_column, text_column
-from src.orm import ExcelFile, SheetSpec
+from src.excel_orm import Column, ExcelFile, SheetSpec, int_column, text_column
 
 
 @pytest.fixture

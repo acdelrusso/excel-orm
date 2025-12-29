@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from src.column import Column, int_column, text_column
-from src.orm import (
+from src.excel_orm import Column, int_column, text_column
+from src.excel_orm.orm import (
     _camel_to_snake,
     _display_name_for_model,
     _get_model_columns,

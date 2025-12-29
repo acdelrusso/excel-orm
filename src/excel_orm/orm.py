@@ -7,7 +7,6 @@ from typing import Any, TypeVar
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.worksheet.worksheet import Worksheet
-
 from src.column import Column
 
 M = TypeVar("M")

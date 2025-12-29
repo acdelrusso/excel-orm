@@ -4,7 +4,7 @@ from datetime import date, datetime
 
 import pytest
 
-from src.column import Column, bool_column, date_column, int_column, text_column
+from src.excel_orm import Column, bool_column, date_column, int_column, text_column
 
 
 def test_descriptor_stores_in_values_dict():
