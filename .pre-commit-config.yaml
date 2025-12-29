@@ -1,0 +1,80 @@
+# .pre-commit-config.yaml
+default_stages: [pre-commit]
+
+minimum_pre_commit_version: "3.7.0"
+
+exclude: |
+  (?x)(
+      ^\.venv/|
+      ^dist/|
+      ^build/|
+      ^\.mypy_cache/|
+      ^\.ruff_cache/|
+      ^\.pytest_cache/|
+      ^\.tox/|
+      ^node_modules/|
+      ^docs/_build/
+  )
+
+repos:
+  # -------------------------
+  # Baseline hygiene hooks
+  # -------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: check-added-large-files
+        args: ["--maxkb=1500"]
+      - id: detect-private-key
+      - id: debug-statements
+
+  # -------------------------
+  # uv: lockfile / export consistency
+  # Official hook repo: astral-sh/uv-pre-commit :contentReference[oaicite:1]{index=1}
+  # -------------------------
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.9.18
+    hooks:
+      # Ensure uv.lock matches pyproject.toml changes
+      - id: uv-lock
+        stages: [pre-commit]
+
+  # -------------------------
+  # Ruff (lint + format)
+  # Official integration: astral-sh/ruff-pre-commit :contentReference[oaicite:2]{index=2}
+  # Order note when using --fix: lint before format :contentReference[oaicite:3]{index=3}
+  # -------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.10
+    hooks:
+      - id: ruff-check
+        args: [--fix, --exit-non-zero-on-fix]
+        stages: [pre-commit]
+      - id: ruff-format
+        stages: [pre-commit]
+
+  # -------------------------
+  # Local hooks that run via uv so they use your pinned toolchain.
+  # This is the cleanest way to integrate ty + pytest today.
+  # ty CLI: `ty check` :contentReference[oaicite:4]{index=4}
+  # -------------------------
+  - repo: local
+    hooks:
+      - id: ty-check
+        name: ty (type check)
+        entry: uv run ty check
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: pytest
+        name: pytest
+        entry: uv run pytest -q
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
