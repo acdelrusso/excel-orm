@@ -7,7 +7,8 @@ from typing import Any, TypeVar
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.worksheet.worksheet import Worksheet
-from src.column import Column
+
+from .column import Column
 
 M = TypeVar("M")
 
@@ -35,17 +36,7 @@ def _display_name_for_model(model: type[Any]) -> str:
 
 
 def _get_model_columns(model: type[Any]) -> list[Column[Any]]:
-    """
-    Return declared Column descriptors on the class in definition order.
-    Uses __annotations__ order as the source of truth.
-    """
-    cols: list[Column[Any]] = []
-    ann = getattr(model, "__annotations__", {})
-    for field_name in ann:
-        v = getattr(model, field_name, None)
-        if isinstance(v, Column):
-            cols.append(v)
-    return cols
+    return list(getattr(model, "__columns__", []))
 
 
 def _normalize_header(v: Any) -> str:
@@ -86,14 +77,45 @@ class SheetSpec:
     template_table_gap: int = 2
 
 
+@dataclass(frozen=True)
+class PivotSheetSpec:
+    name: str
+    model: type[Any]  # single model only
+
+    # field names on the model
+    pivot_field: str
+    row_field: str
+    value_field: str
+
+    # layout
+    title_row: int = 1
+    header_row: int = 2  # pivot headers
+    row_header_col: int = 1
+    data_start_row: int = 3
+    data_start_col: int = 2
+
+    # template: define the pivot column values (dates) to render across the top
+    pivot_values: list[Any] | None = None  # e.g., list[date]; required for generation
+
+    # optional: seed row keys (regions) on template
+    row_values: list[Any] | None = None
+
+    include_blanks: bool = False  # whether to load blank cells as data points
+
+
+AnySheetSpec = PivotSheetSpec | SheetSpec
+
+
 class ExcelFile:
-    def __init__(self, *, sheets: list[SheetSpec]):
+    def __init__(self, *, sheets: list[AnySheetSpec]):
         self.sheets = sheets
 
         self._repos: dict[type[Any], Repository[Any]] = {}
 
         for sheet in sheets:
-            for model in sheet.models:
+            models = [sheet.model] if isinstance(sheet, PivotSheetSpec) else sheet.models
+
+            for model in models:
                 repo_name = _repo_name_for_model(model)
                 if hasattr(self, repo_name):
                     raise ValueError(
@@ -105,14 +127,16 @@ class ExcelFile:
 
     def generate_template(self, filename: str) -> None:
         wb = Workbook()
-        # remove default sheet if we will create our own named sheets
         default_ws = wb.active
-        if len(self.sheets) > 0:
+        if self.sheets:
             wb.remove(default_ws)
 
         for sheet in self.sheets:
             ws = wb.create_sheet(title=sheet.name)
-            self._write_sheet_template(ws, sheet)
+            if isinstance(sheet, PivotSheetSpec):
+                self._write_pivot_sheet_template(ws, sheet)
+            else:
+                self._write_sheet_template(ws, sheet)
 
         wb.save(filename)
 
@@ -157,8 +181,6 @@ class ExcelFile:
 
     def load_data(self, filename: str) -> None:
         wb = load_workbook(filename=filename, data_only=True)
-
-        # clear old data
         for repo in self._repos.values():
             repo.clear()
 
@@ -166,7 +188,10 @@ class ExcelFile:
             if sheet_spec.name not in wb.sheetnames:
                 raise ValueError(f"Workbook missing sheet '{sheet_spec.name}'")
             ws = wb[sheet_spec.name]
-            self._parse_sheet(ws, sheet_spec)
+            if isinstance(sheet_spec, PivotSheetSpec):
+                self._parse_pivot_sheet(ws, sheet_spec)
+            else:
+                self._parse_sheet(ws, sheet_spec)
 
     def _parse_sheet(self, ws: Worksheet, spec: SheetSpec) -> None:
         for model in spec.models:
@@ -227,3 +252,102 @@ class ExcelFile:
                 return (r, start_col)
 
         return None
+
+    def _write_pivot_sheet_template(self, ws: Worksheet, spec: PivotSheetSpec) -> None:
+        if not spec.pivot_values:
+            raise ValueError("PivotSheetSpec.pivot_values is required for template generation.")
+
+        title_font = Font(bold=True)
+        title_alignment = Alignment(horizontal="center", vertical="center")
+        header_font = Font(bold=True)
+
+        # Title merged across the pivot header span
+        end_col = spec.data_start_col + len(spec.pivot_values) - 1
+
+        ws.merge_cells(
+            start_row=spec.title_row,
+            start_column=spec.row_header_col,
+            end_row=spec.title_row,
+            end_column=end_col,
+        )
+        tcell = ws.cell(spec.title_row, spec.row_header_col, _display_name_for_model(spec.model))
+        tcell.font = title_font
+        tcell.alignment = title_alignment
+
+        # Top-left corner header (row field name)
+        corner = ws.cell(spec.header_row, spec.row_header_col, spec.row_field.title())
+        corner.font = header_font
+
+        # Pivot headers across the top
+        for j, pv in enumerate(spec.pivot_values):
+            c = spec.data_start_col + j
+            cell = ws.cell(spec.header_row, c, pv)
+            cell.font = header_font
+
+            col_letter = ws.cell(spec.header_row, c).column_letter
+            ws.column_dimensions[col_letter].width = 14
+
+        # Seed row keys (optional)
+        if spec.row_values:
+            for i, rv in enumerate(spec.row_values):
+                r = spec.data_start_row + i
+                ws.cell(r, spec.row_header_col, rv)
+
+    def _parse_pivot_sheet(self, ws: Worksheet, spec: PivotSheetSpec) -> None:
+        model = spec.model
+        cols = {c.name: c for c in _get_model_columns(model)}  # Column descriptors by field name
+
+        # Validate fields exist
+        for fname in (spec.pivot_field, spec.row_field, spec.value_field):
+            if fname not in cols:
+                raise ValueError(
+                    f"{model.__name__} is missing Column field '{fname}' required by PivotSheetSpec."
+                )
+
+        pivot_col = cols[spec.pivot_field]
+        row_col = cols[spec.row_field]
+        val_col = cols[spec.value_field]
+
+        # Determine pivot headers from sheet (or trust spec.pivot_values)
+        pivot_headers: list[Any] = []
+        j = 0
+        while True:
+            c = spec.data_start_col + j
+            raw = ws.cell(spec.header_row, c).value
+            if raw is None or str(raw).strip() == "":
+                break
+            pivot_headers.append(pivot_col.parse_cell(raw))
+            j += 1
+
+        if not pivot_headers:
+            return
+
+        repo: Repository[Any] = self._repos[model]
+
+        r = spec.data_start_row
+        while r <= ws.max_row:
+            raw_row_key = ws.cell(r, spec.row_header_col).value
+            if raw_row_key is None or str(raw_row_key).strip() == "":
+                break
+
+            row_key = row_col.parse_cell(raw_row_key)
+
+            for j, pivot_value in enumerate(pivot_headers):
+                c = spec.data_start_col + j
+                raw_val = ws.cell(r, c).value
+                if not spec.include_blanks and (raw_val is None or raw_val == ""):
+                    continue
+
+                obj = _instantiate_model(model)
+
+                setattr(obj, spec.row_field, row_key)
+                setattr(obj, spec.pivot_field, pivot_value)
+                setattr(obj, spec.value_field, val_col.parse_cell(raw_val))
+
+                validate = getattr(obj, "validate", None)
+                if callable(validate):
+                    validate()
+
+                repo.append(obj)
+
+            r += 1

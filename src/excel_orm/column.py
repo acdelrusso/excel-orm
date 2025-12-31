@@ -11,9 +11,7 @@ T = TypeVar("T")
 @dataclass(frozen=True)
 class ColumnSpec[T]:
     header: str | None = None  # header string in Excel
-    index: int | None = None  # 0-based index fallback (optional)
     default: T | None = None
-    required: bool = False  # must be present in sheet mapping
     not_null: bool = False  # parsed value cannot be None/empty
     excludes: set[Any] | None = None  # raw values that mark row as excluded
     parser: Callable[[Any], T] = lambda x: x  # raw -> parsed
@@ -27,6 +25,11 @@ class Column[T]:
 
     def __set_name__(self, owner, name: str):
         self.name = name
+        # register in definition order
+        reg = owner.__dict__.get("__columns__")
+        if reg is None:
+            owner.__columns__ = []
+        owner.__columns__.append(self)
 
     def __get__(self, obj, objtype=None) -> T | Column | None:
         if obj is None:
@@ -40,9 +43,6 @@ class Column[T]:
     def parse_cell(self, raw: Any) -> T | None:
         return self.spec.parser(raw)
 
-    def render_cell(self, value: T | None) -> Any:
-        return self.spec.renderer(value)
-
     def validate(self, value: T | None) -> None:
         if self.spec.not_null and (value is None or value == ""):
             raise ValueError(f"{self.name} cannot be null/empty")
@@ -52,7 +52,6 @@ class Column[T]:
 def text_column(
     header: str | None = None,
     *,
-    index: int | None = None,
     default: str | None = None,
     strip: bool = True,
     not_null: bool = False,
@@ -68,7 +67,6 @@ def text_column(
     return Column(
         ColumnSpec[str](
             header=header,
-            index=index,
             default=default,
             not_null=not_null,
             parser=parse,
@@ -80,7 +78,6 @@ def text_column(
 def int_column(
     header: str | None = None,
     *,
-    index: int | None = None,
     default: int | None = None,
     not_null: bool = False,
 ):
@@ -92,7 +89,6 @@ def int_column(
     return Column(
         ColumnSpec[int](
             header=header,
-            index=index,
             default=default,
             not_null=not_null,
             parser=parse,
@@ -100,9 +96,7 @@ def int_column(
     )
 
 
-def bool_column(
-    header: str | None = None, *, index: int | None = None, default: bool | None = None
-):
+def bool_column(header: str | None = None, *, default: bool | None = None):
     def parse(raw: Any) -> bool:
         if raw is None or raw == "":
             return False
@@ -118,16 +112,13 @@ def bool_column(
     return Column(
         ColumnSpec[bool](
             header=header,
-            index=index,
             default=default,
             parser=parse,
         )
     )
 
 
-def date_column(
-    header: str | None = None, *, index: int | None = None, default: date | None = None
-):
+def date_column(header: str | None = None, *, default: date | None = None):
     _DATE_FORMATS: tuple[str, ...] = (
         "%d-%b-%Y",  # 01-JUN-2025  (your requirement)
         "%d-%b-%y",  # 01-JUN-25
@@ -177,7 +168,6 @@ def date_column(
     return Column(
         ColumnSpec[date](
             header=header,
-            index=index,
             default=default,
             parser=parse,
             renderer=lambda d: None if d is None else d,  # openpyxl handles date types
